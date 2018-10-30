@@ -98,13 +98,12 @@ a value?
 
 """
 
-
-import collections
+import queue
 import threading
 import time
 
 
-class SoundCard(object):
+class ProgramOne(object):
     def __init__(self):
         self._instructions = []
         self._last_played_freq = None
@@ -119,8 +118,10 @@ class SoundCard(object):
                                  'rcv': self._rcv,
                                  'jgz': self._jgz}
 
-    def _init_registers(self):
+    def _init_registers(self, initial_setup=None):
         self._registers = {chr(c): 0 for c in range(ord('a'), ord('z') + 1)}
+        if initial_setup is not None:
+            self._registers.update(initial_setup)
 
     def _set(self, reg, value):
         v = self._registers.get(value, value)
@@ -152,7 +153,7 @@ class SoundCard(object):
         b = self._registers.get(value_b, value_b)
 
         if a > 0:
-            self._current_position += b - 1  # -1 because we're incrementing this in the solve_part_one function by one
+            self._current_position += b - 1  # -1 because we're incrementing this in the process function by one
 
     def _load_instructions(self, filename):
         with open(filename, 'r', encoding='utf-8') as fh:
@@ -166,7 +167,7 @@ class SoundCard(object):
 
                 self._instructions.append(instruction)
 
-    def solve_part_one(self, filename):
+    def process(self, filename):
         self._load_instructions(filename)
         self._init_registers()
 
@@ -178,10 +179,10 @@ class SoundCard(object):
             self._instruction_set[instr](*args)
             self._current_position += 1
 
-        print(self._recovered_freq)
+        return self._recovered_freq
 
 
-class Program(SoundCard):
+class ProgramTwo(ProgramOne):
     def __init__(self, program_id, in_queue, out_queue):
         super().__init__()
         self.pid = program_id
@@ -189,28 +190,29 @@ class Program(SoundCard):
         self.out_queue = out_queue
         self.running = False
         self.sent_values = 0
-
-        self._init_registers()
-        self._registers['p'] = self.pid
-
-    def _init_registers(self):
-        self._registers = {chr(c): 0 for c in range(ord('a'), ord('z') + 1)}
-        self._registers['p'] = self.pid
+        self._init_registers({'p': self.pid})
 
     def _snd(self, value):
         v = self._registers.get(value, value)
-        self.out_queue.append(v)
+        self.out_queue.put(v)
         self.sent_values += 1
 
     def _rcv(self, reg):
+        tries = 0
         while self.running:
-            if self.in_queue:
-                self._registers[reg] = self.in_queue.popleft()
+            if not self.in_queue.empty():
+                self._registers[reg] = self.in_queue.get()
                 break
+            else:
+                tries += 1
+                if tries >= 3:
+                    self.running = False
+                else:
+                    time.sleep(0.1)
 
     def process(self, filename):
         self._load_instructions(filename)
-        self._init_registers()
+        self._init_registers({'p': self.pid})
         self.running = True
 
         while 0 <= self._current_position < len(self._instructions) and self.running:
@@ -221,30 +223,37 @@ class Program(SoundCard):
             self._instruction_set[instr](*args)
             self._current_position += 1
 
+        self.running = False
+
 
 def solve_part_two(filename):
-    queue_p1 = collections.deque()
-    queue_p2 = collections.deque()
+    def _finished():
+        if all(not p.running for p in programs):
+            return True
 
-    programs = [Program(0, queue_p1, queue_p2), Program(1, queue_p2, queue_p1)]
+        return False
 
+    queue_p1 = queue.Queue()
+    queue_p2 = queue.Queue()
+
+    programs = [ProgramTwo(0, queue_p1, queue_p2), ProgramTwo(1, queue_p2, queue_p1)]
     threads = [threading.Thread(target=program.process, args=[filename]) for program in programs]
 
     for t in threads:
         t.start()
 
-    time.sleep(10)  # don't know how to detect deadlock. Assume 10 s is enough for program to run.
-    for p in programs:
-        p.running = False
+    while not _finished():
+        time.sleep(0.1)
 
     for t in threads:
         t.join()
 
     for p in programs:
-        print(p.pid, p.sent_values)
+        if p.pid == 1:
+            return p.sent_values
 
 
 if __name__ == '__main__':
-    sndcard = SoundCard()
-    sndcard.solve_part_one('day18_input.txt')  # 4601
-    solve_part_two('day18_input.txt')  # 6858
+    prog = ProgramOne()
+    print(prog.process('day18_input.txt'))  # 4601
+    print(solve_part_two('day18_input.txt'))  # 6858
